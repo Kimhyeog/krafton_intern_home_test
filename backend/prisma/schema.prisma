@@ -1,0 +1,24 @@
+generator client {
+  provider             = "prisma-client-py"
+  interface            = "asyncio"
+  recursive_type_depth = 5
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Asset {
+  id        Int      @id @default(autoincrement())
+  jobId     String   @unique @map("job_id")
+  filePath  String   @map("file_path")
+  prompt    String
+  model     String
+  assetType String   @map("asset_type")
+  createdAt DateTime @default(now()) @map("created_at")
+  fileSize  Int?     @map("file_size")
+  duration  Float?
+
+  @@map("assets")
+}
