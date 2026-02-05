@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://krafton:krafton@db:5432/asset_db
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+      - GOOGLE_CLOUD_REGION=us-central1
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
+      - STORAGE_PATH=/app/storage
+    volumes:
+      - ./backend/credentials:/app/credentials:ro
+      - ./backend/storage:/app/storage
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=krafton
+      - POSTGRES_PASSWORD=krafton
+      - POSTGRES_DB=asset_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U krafton"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
