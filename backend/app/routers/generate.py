@@ -57,10 +57,10 @@ async def process_video_from_text(job_id: str, prompt: str, model: str):
     except Exception as e:
         await job_manager.update_job(job_id, status="failed", error_message=str(e))
 
-async def process_video_from_image(job_id: str, prompt: str, model: str, image_bytes: bytes):
+async def process_video_from_image(job_id: str, prompt: str, model: str, image_bytes: bytes, mime_type: str):
     try:
         await job_manager.update_job(job_id, status="processing")
-        result_url = await vertex_ai_service.generate_video_from_image(prompt, image_bytes, job_id)
+        result_url = await vertex_ai_service.generate_video_from_image(prompt, image_bytes, job_id, mime_type)
         asset = await db.asset.create(data={
             "jobId": job_id,
             "filePath": result_url,
@@ -98,7 +98,8 @@ async def image_to_video(
     job_id = str(uuid4())
     job = await job_manager.create_job(job_id)
     image_bytes = await image.read()
-    background_tasks.add_task(process_video_from_image, job_id, prompt, model, image_bytes)
+    mime_type = image.content_type or "image/png"
+    background_tasks.add_task(process_video_from_image, job_id, prompt, model, image_bytes, mime_type)
     return GenerateResponse(job_id=job_id, status="pending", created_at=job.created_at)
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)

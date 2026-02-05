@@ -119,7 +119,7 @@ class VertexAIService:
         print(f"[Veo] Video saved to {file_path}")
         return f"/storage/videos/{file_name}"
 
-    async def generate_video_from_image(self, prompt: str, image_bytes: bytes, job_id: str) -> str:
+    async def generate_video_from_image(self, prompt: str, image_bytes: bytes, job_id: str, mime_type: str = "image/png") -> str:
         """
         Image-to-Video: Veo 2.0으로 이미지에서 비디오 생성
 
@@ -133,7 +133,8 @@ class VertexAIService:
         # 1. LRO 요청 시작
         operation_name = await self._start_veo_operation(
             prompt=prompt,
-            image_base64=image_base64
+            image_base64=image_base64,
+            image_mime_type=mime_type
         )
 
         # 2. Operation 완료까지 폴링
@@ -151,7 +152,7 @@ class VertexAIService:
         print(f"[Veo] Video saved to {file_path}")
         return f"/storage/videos/{file_name}"
 
-    async def _start_veo_operation(self, prompt: str, image_base64: str = None) -> str:
+    async def _start_veo_operation(self, prompt: str, image_base64: str = None, image_mime_type: str = None) -> str:
         """
         Veo LRO 작업 시작 (REST API)
 
@@ -164,7 +165,10 @@ class VertexAIService:
         instance = {"prompt": prompt}
 
         if image_base64:
-            instance["image"] = {"bytesBase64Encoded": image_base64}
+            instance["image"] = {
+                "bytesBase64Encoded": image_base64,
+                "mimeType": image_mime_type or "image/png"
+            }
 
         payload = {
             "instances": [instance],
