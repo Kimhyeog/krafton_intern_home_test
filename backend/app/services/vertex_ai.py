@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-VEO_MODEL = "veo-2.0-generate-001"
+VEO_MODEL = "veo-3.0-fast-generate-001"
 IMAGEN_MODEL = "imagen-3.0-fast-generate-001"
 
 # Vertex AI API 스코프
@@ -225,7 +225,7 @@ class VertexAIService:
             "instances": [instance],
             "parameters": {
                 "sampleCount": 1,
-                "durationSeconds": 5,
+                "durationSeconds": 8,
                 "aspectRatio": "16:9"
             }
         }
