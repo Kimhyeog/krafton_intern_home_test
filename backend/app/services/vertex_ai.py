@@ -9,6 +9,16 @@ import asyncio
 import base64
 import time
 import httpx
+import logging
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -23,6 +33,17 @@ VERTEX_AI_SCOPES = [
 # LRO Polling 설정
 LRO_POLL_INTERVAL = 10  # 10초마다 상태 확인
 LRO_MAX_WAIT_TIME = 600  # 최대 10분 대기
+
+
+# ===== 재시도용 커스텀 예외 =====
+
+class RetryableAPIError(Exception):
+    """429 (Rate Limit), 503 (Service Unavailable) 등 재시도 가능한 에러"""
+    pass
+
+class NonRetryableAPIError(Exception):
+    """400 (Bad Request) 등 재시도해도 의미 없는 에러"""
+    pass
 
 # 서비스 계정 파일 경로
 SERVICE_ACCOUNT_FILE = os.environ.get(
@@ -64,21 +85,43 @@ class VertexAIService:
             self.credentials.refresh(Request())
         return self.credentials.token
 
+    @retry(
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=2, min=2, max=60),
+        retry=retry_if_exception_type(RetryableAPIError),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
     async def generate_image(self, prompt: str, job_id: str) -> str:
         """
         Text-to-Image: Imagen 3.0으로 이미지 생성
 
         Imagen은 동기식 API를 사용합니다.
         - 요청 → 즉시 결과 반환 (5-10초)
+        - 429/503 에러 시 Exponential Backoff로 자동 재시도 (최대 5회)
         """
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: self.image_model.generate_images(
-                prompt=prompt,
-                number_of_images=1
+        try:
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.image_model.generate_images(
+                    prompt=prompt,
+                    number_of_images=1
+                )
             )
-        )
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                logger.warning(f"[Imagen] Rate limit hit, will retry: {error_str}")
+                raise RetryableAPIError(error_str)
+            if "503" in error_str or "UNAVAILABLE" in error_str:
+                logger.warning(f"[Imagen] Service unavailable, will retry: {error_str}")
+                raise RetryableAPIError(error_str)
+            if "500" in error_str or "INTERNAL" in error_str:
+                logger.warning(f"[Imagen] Internal error, will retry: {error_str}")
+                raise RetryableAPIError(error_str)
+            # 400, 403 등은 재시도 불가
+            raise NonRetryableAPIError(error_str)
 
         file_name = f"{job_id}.png"
         file_path = os.path.join(settings.storage_path, "images", file_name)
@@ -152,9 +195,17 @@ class VertexAIService:
         print(f"[Veo] Video saved to {file_path}")
         return f"/storage/videos/{file_name}"
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=5, max=30),
+        retry=retry_if_exception_type(RetryableAPIError),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
     async def _start_veo_operation(self, prompt: str, image_base64: str = None, image_mime_type: str = None) -> str:
         """
         Veo LRO 작업 시작 (REST API)
+        - 429/503 에러 시 Exponential Backoff로 자동 재시도 (최대 3회)
 
         Returns:
             str: Operation name (폴링에 사용)
@@ -184,23 +235,26 @@ class VertexAIService:
             "Content-Type": "application/json"
         }
 
-        print(f"[Veo LRO] Calling: {url}")
+        logger.info(f"[Veo LRO] Calling: {url}")
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(url, json=payload, headers=headers)
 
+            # HTTP 상태 코드별 분류
+            if response.status_code == 429:
+                raise RetryableAPIError(f"Rate limit exceeded: {response.text}")
+            if response.status_code >= 500:
+                raise RetryableAPIError(f"Server error {response.status_code}: {response.text}")
             if response.status_code != 200:
-                error_detail = response.text
-                print(f"[Veo LRO] Error starting operation: {response.status_code} - {error_detail}")
-                raise Exception(f"Failed to start Veo operation: {response.status_code} - {error_detail}")
+                raise NonRetryableAPIError(f"Client error {response.status_code}: {response.text}")
 
             result = response.json()
             operation_name = result.get("name")
 
             if not operation_name:
-                raise Exception(f"No operation name in response: {result}")
+                raise NonRetryableAPIError(f"No operation name in response: {result}")
 
-            print(f"[Veo LRO] Operation started: {operation_name}")
+            logger.info(f"[Veo LRO] Operation started: {operation_name}")
             return operation_name
 
     async def _poll_operation(self, operation_name: str) -> dict:
