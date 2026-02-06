@@ -6,6 +6,9 @@ from datetime import datetime
 from app.db import db
 from app.services.job_manager import job_manager
 from app.services.vertex_ai import vertex_ai_service
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
 
@@ -25,16 +28,46 @@ class JobStatusResponse(BaseModel):
     result_url: Optional[str] = None
     error_message: Optional[str] = None
 
+# ===== 캐시 조회 =====
+
+async def find_cached_asset(prompt: str, model: str, asset_type: str) -> Optional[dict]:
+    """
+    동일 prompt + model + assetType 조합의 기존 에셋을 DB에서 검색.
+    캐시 히트 시 asset_id와 result_url을 반환, 없으면 None.
+    """
+    normalized_prompt = prompt.strip().lower()
+
+    asset = await db.asset.find_first(
+        where={
+            "prompt": normalized_prompt,
+            "model": model,
+            "assetType": asset_type,
+        },
+        order={"createdAt": "desc"},
+    )
+
+    if asset and asset.filePath:
+        logger.info(f"[Cache] HIT - prompt='{normalized_prompt[:30]}...', model={model}")
+        return {
+            "asset_id": asset.id,
+            "result_url": asset.filePath,
+        }
+
+    logger.info(f"[Cache] MISS - prompt='{normalized_prompt[:30]}...', model={model}")
+    return None
+
+
 # ===== Background Tasks =====
 
 async def process_image_generation(job_id: str, prompt: str, model: str):
     try:
         await job_manager.update_job(job_id, status="processing")
         result_url = await vertex_ai_service.generate_image(prompt, job_id)
+        normalized_prompt = prompt.strip().lower()
         asset = await db.asset.create(data={
             "jobId": job_id,
             "filePath": result_url,
-            "prompt": prompt,
+            "prompt": normalized_prompt,
             "model": model,
             "assetType": "image"
         })
@@ -46,10 +79,11 @@ async def process_video_from_text(job_id: str, prompt: str, model: str):
     try:
         await job_manager.update_job(job_id, status="processing")
         result_url = await vertex_ai_service.generate_video_from_text(prompt, job_id)
+        normalized_prompt = prompt.strip().lower()
         asset = await db.asset.create(data={
             "jobId": job_id,
             "filePath": result_url,
-            "prompt": prompt,
+            "prompt": normalized_prompt,
             "model": model,
             "assetType": "video"
         })
@@ -61,10 +95,11 @@ async def process_video_from_image(job_id: str, prompt: str, model: str, image_b
     try:
         await job_manager.update_job(job_id, status="processing")
         result_url = await vertex_ai_service.generate_video_from_image(prompt, image_bytes, job_id, mime_type)
+        normalized_prompt = prompt.strip().lower()
         asset = await db.asset.create(data={
             "jobId": job_id,
             "filePath": result_url,
-            "prompt": prompt,
+            "prompt": normalized_prompt,
             "model": model,
             "assetType": "video"
         })
@@ -76,6 +111,20 @@ async def process_video_from_image(job_id: str, prompt: str, model: str, image_b
 
 @router.post("/text-to-image", response_model=GenerateResponse)
 async def text_to_image(request: GenerateRequest, background_tasks: BackgroundTasks):
+    # 캐시 확인: 동일 prompt + model 조합이 DB에 있는지 검색
+    cached = await find_cached_asset(request.prompt, request.model, "image")
+    if cached:
+        job_id = str(uuid4())
+        job = await job_manager.create_job(job_id)
+        await job_manager.update_job(
+            job_id,
+            status="completed",
+            asset_id=cached["asset_id"],
+            result_url=cached["result_url"],
+        )
+        return GenerateResponse(job_id=job_id, status="completed", created_at=job.created_at)
+
+    # 캐시 미스: 새로 생성
     job_id = str(uuid4())
     job = await job_manager.create_job(job_id)
     background_tasks.add_task(process_image_generation, job_id, request.prompt, request.model)
@@ -83,6 +132,20 @@ async def text_to_image(request: GenerateRequest, background_tasks: BackgroundTa
 
 @router.post("/text-to-video", response_model=GenerateResponse)
 async def text_to_video(request: GenerateRequest, background_tasks: BackgroundTasks):
+    # 캐시 확인
+    cached = await find_cached_asset(request.prompt, request.model, "video")
+    if cached:
+        job_id = str(uuid4())
+        job = await job_manager.create_job(job_id)
+        await job_manager.update_job(
+            job_id,
+            status="completed",
+            asset_id=cached["asset_id"],
+            result_url=cached["result_url"],
+        )
+        return GenerateResponse(job_id=job_id, status="completed", created_at=job.created_at)
+
+    # 캐시 미스
     job_id = str(uuid4())
     job = await job_manager.create_job(job_id)
     background_tasks.add_task(process_video_from_text, job_id, request.prompt, request.model)

@@ -36,6 +36,15 @@ export function useGenerate() {
 
       try {
         const res = await apiGenerate(mode, prompt, model, imageFile);
+
+        // 캐시 히트: 서버가 즉시 completed를 반환한 경우
+        if (res.status === "completed") {
+          const status = await getJobStatus(res.job_id);
+          setJobStatus(status);
+          setIsLoading(false);
+          return;
+        }
+
         setJobStatus({ job_id: res.job_id, status: "pending" });
 
         pollingRef.current = setInterval(async () => {
