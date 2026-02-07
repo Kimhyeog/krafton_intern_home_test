@@ -20,6 +20,9 @@ services:
       - GOOGLE_CLOUD_REGION=us-central1
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
       - STORAGE_PATH=/app/storage
+      # 부하 테스트 Mock 모드 (Vertex AI 호출을 asyncio.sleep으로 대체)
+      # 실제 Vertex AI 생성을 사용하려면 아래 줄을 주석 처리
+      # - LOAD_TEST_MODE=true
     volumes:
       - ./backend/credentials:/app/credentials:ro
       - ./backend/storage:/app/storage
@@ -40,6 +43,17 @@ services:
       retries: 5
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  # Locust 부하 테스트 대시보드 (http://localhost:8089)
+  locust:
+    image: locustio/locust:2.32.6
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./backend/locustfile.py:/mnt/locust/locustfile.py
+    command: -f /mnt/locust/locustfile.py --host http://backend:8000
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

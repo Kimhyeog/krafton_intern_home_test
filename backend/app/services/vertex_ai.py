@@ -1,15 +1,12 @@
-import vertexai
-from vertexai.preview.vision_models import ImageGenerationModel
-from google.oauth2 import service_account
-from google.auth.transport.requests import Request
-from app.config import get_settings
-import aiofiles
 import os
 import asyncio
 import base64
 import time
-import httpx
+import random
 import logging
+
+import aiofiles
+import httpx
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -17,6 +14,17 @@ from tenacity import (
     retry_if_exception_type,
     before_sleep_log,
 )
+
+from app.config import get_settings
+
+# Mock 모드: LOAD_TEST_MODE=true 일 때 Vertex AI 호출을 asyncio.sleep으로 대체
+LOAD_TEST_MODE = os.environ.get("LOAD_TEST_MODE", "").lower() == "true"
+
+if not LOAD_TEST_MODE:
+    import vertexai
+    from vertexai.preview.vision_models import ImageGenerationModel
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +95,12 @@ def _to_korean_safety_message(error_msg: str) -> str | None:
 
 class VertexAIService:
     def __init__(self):
+        if LOAD_TEST_MODE:
+            # Mock 모드: GCP 인증/SDK 초기화 건너뛰기
+            logger.info("[VertexAI] LOAD_TEST_MODE enabled — skipping GCP auth")
+            print("[VertexAI] LOAD_TEST_MODE enabled — using mock generation")
+            return
+
         self.project = settings.google_cloud_project
         self.location = settings.google_cloud_region
 
@@ -134,6 +148,18 @@ class VertexAIService:
         """
         async with IMAGE_SEMAPHORE:
             logger.info(f"[Imagen] Acquired semaphore for job {job_id}")
+
+            if LOAD_TEST_MODE:
+                # Mock: 실제 API 대신 2~4초 대기
+                await asyncio.sleep(random.uniform(2, 4))
+                file_name = f"{job_id}.png"
+                file_path = os.path.join(settings.storage_path, "images", file_name)
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                async with aiofiles.open(file_path, "wb") as f:
+                    await f.write(b"mock-image-data")
+                logger.info(f"[Imagen] Mock generation completed for job {job_id}")
+                return f"/storage/images/{file_name}"
+
             try:
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(
@@ -182,6 +208,17 @@ class VertexAIService:
         async with VIDEO_SEMAPHORE:
             logger.info(f"[Veo] Acquired semaphore for job {job_id}")
 
+            if LOAD_TEST_MODE:
+                # Mock: 실제 API 대신 3~6초 대기
+                await asyncio.sleep(random.uniform(3, 6))
+                file_name = f"{job_id}.mp4"
+                file_path = os.path.join(settings.storage_path, "videos", file_name)
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                async with aiofiles.open(file_path, "wb") as f:
+                    await f.write(b"mock-video-data")
+                logger.info(f"[Veo] Mock generation completed for job {job_id}")
+                return f"/storage/videos/{file_name}"
+
             # 1. LRO 요청 시작
             operation_name = await self._start_veo_operation(
                 prompt=prompt,
@@ -216,6 +253,17 @@ class VertexAIService:
 
         async with VIDEO_SEMAPHORE:
             logger.info(f"[Veo] Acquired semaphore for job {job_id}")
+
+            if LOAD_TEST_MODE:
+                # Mock: 실제 API 대신 3~6초 대기
+                await asyncio.sleep(random.uniform(3, 6))
+                file_name = f"{job_id}.mp4"
+                file_path = os.path.join(settings.storage_path, "videos", file_name)
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                async with aiofiles.open(file_path, "wb") as f:
+                    await f.write(b"mock-video-data")
+                logger.info(f"[Veo] Mock generation completed for job {job_id}")
+                return f"/storage/videos/{file_name}"
 
             # 1. LRO 요청 시작
             operation_name = await self._start_veo_operation(
