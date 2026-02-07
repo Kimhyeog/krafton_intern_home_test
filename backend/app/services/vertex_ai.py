@@ -57,6 +57,34 @@ SERVICE_ACCOUNT_FILE = os.environ.get(
 )
 
 
+# ===== Vertex AI 안전 정책 에러 → 한글 변환 =====
+
+_SAFETY_PATTERNS = [
+    # (영문 패턴, 한글 사유 메시지)
+    ("usage guidelines", "입력하신 프롬프트가 Vertex AI 이용 정책을 위반하여 요청이 거부되었습니다."),
+    ("could not be submitted", "입력하신 프롬프트가 정책에 의해 제출이 거부되었습니다."),
+    ("raiMediaFiltered", "생성된 콘텐츠가 안전 정책(폭력, 선정성 등)에 의해 차단되었습니다."),
+    ("safety", "안전 정책에 의해 요청이 차단되었습니다."),
+    ("responsible ai", "AI 윤리 정책에 의해 요청이 차단되었습니다."),
+    ("copyright", "저작권 관련 정책에 의해 차단되었습니다."),
+    ("trademark", "상표권 관련 정책에 의해 차단되었습니다."),
+    ("person", "특정 인물 생성이 정책에 의해 제한되었습니다."),
+    ("child", "아동 관련 콘텐츠가 정책에 의해 차단되었습니다."),
+    ("blocked", "콘텐츠 정책에 의해 차단되었습니다."),
+]
+
+def _to_korean_safety_message(error_msg: str) -> str | None:
+    """
+    Vertex AI 에러 메시지에서 안전 정책 관련 패턴을 감지하여 한글로 변환.
+    안전 정책과 무관한 에러이면 None을 반환.
+    """
+    lower = error_msg.lower()
+    for pattern, korean_msg in _SAFETY_PATTERNS:
+        if pattern in lower:
+            return f"{korean_msg} 프롬프트를 수정한 후 다시 시도해 주세요."
+    return None
+
+
 class VertexAIService:
     def __init__(self):
         self.project = settings.google_cloud_project
@@ -126,7 +154,11 @@ class VertexAIService:
                 if "500" in error_str or "INTERNAL" in error_str:
                     logger.warning(f"[Imagen] Internal error, will retry: {error_str}")
                     raise RetryableAPIError(error_str)
-                # 400, 403 등은 재시도 불가
+                # 400, 403 등은 재시도 불가 — 안전 정책이면 한글 변환
+                korean = _to_korean_safety_message(error_str)
+                if korean:
+                    logger.warning(f"[Imagen] Safety policy error: {error_str}")
+                    raise NonRetryableAPIError(korean)
                 raise NonRetryableAPIError(error_str)
 
         # 파일 저장은 Semaphore 밖 (I/O가 슬롯을 점유할 필요 없음)
@@ -258,6 +290,10 @@ class VertexAIService:
             if response.status_code >= 500:
                 raise RetryableAPIError(f"Server error {response.status_code}: {response.text}")
             if response.status_code != 200:
+                korean = _to_korean_safety_message(response.text)
+                if korean:
+                    logger.warning(f"[Veo LRO] Safety policy error in request: {response.text}")
+                    raise NonRetryableAPIError(korean)
                 raise NonRetryableAPIError(f"Client error {response.status_code}: {response.text}")
 
             result = response.json()
@@ -321,7 +357,12 @@ class VertexAIService:
                     # 에러 체크
                     if "error" in result:
                         error = result["error"]
-                        raise Exception(f"Veo operation failed: {error.get('message', error)}")
+                        raw_msg = error.get("message", str(error))
+                        korean = _to_korean_safety_message(raw_msg)
+                        if korean:
+                            logger.warning(f"[Veo LRO] Safety policy error: {raw_msg}")
+                            raise Exception(korean)
+                        raise Exception(f"Veo operation failed: {raw_msg}")
 
                     # 응답 구조 로깅 (디버깅용)
                     print(f"[Veo LRO] Full response keys: {list(result.keys())}")
@@ -347,6 +388,15 @@ class VertexAIService:
         Returns:
             bytes: 비디오 파일 바이트
         """
+        # RAI 안전 필터 체크 (try 밖 — 한글 메시지가 이중 래핑되지 않도록)
+        rai_count = result.get("raiMediaFilteredCount", 0)
+        if rai_count and int(rai_count) > 0:
+            reasons = result.get("raiMediaFilteredReasons", [])
+            reason_text = reasons[0] if reasons else "raiMediaFiltered"
+            logger.warning(f"[Veo LRO] RAI filter blocked: {reasons}")
+            korean = _to_korean_safety_message(reason_text)
+            raise Exception(korean or "생성된 콘텐츠가 안전 정책에 의해 차단되었습니다. 프롬프트를 수정한 후 다시 시도해 주세요.")
+
         try:
             # 방법 1: predictions 배열에서 추출
             predictions = result.get("predictions", [])
