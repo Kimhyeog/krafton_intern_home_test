@@ -8,16 +8,16 @@
 - 로그아웃 (POST /api/auth/logout)
 - 내 정보 (GET /api/auth/me)
 
+유형: Integration Test — DB만 Mock, 나머지(bcrypt, JWT, FastAPI)는 진짜 사용
 전략: 디트로이트파 (Classicist)
-- 외부 시스템(DB)만 Mock
-- 내부 객체(Pydantic, FastAPI 라우팅, bcrypt, JWT)는 진짜 사용
-- "응답 상태 코드와 데이터가 올바른가?" 를 검증
 """
 import pytest
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import AsyncClient, ASGITransport
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture

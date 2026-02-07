@@ -1,13 +1,14 @@
 """
-Phase 8: SSE (Server-Sent Events) 테스트
+SSE (Server-Sent Events) 테스트
 
 테스트 대상:
 - backend/app/services/job_manager.py — asyncio.Event 알림 메커니즘
 - backend/app/routers/generate.py — GET /jobs/{job_id}/stream SSE 엔드포인트
 
+유형:
+- Part 1: Unit Test — asyncio.Event 단위 테스트 (외부 의존성 없음)
+- Part 2: Integration Test — SSE 엔드포인트 통합 테스트 (DB/VertexAI만 Mock)
 전략: 디트로이트파 (Classicist)
-- Part 1: asyncio.Event 단위 테스트 (외부 의존성 없음)
-- Part 2: SSE 엔드포인트 통합 테스트 (DB/VertexAI만 Mock)
 """
 import pytest
 import asyncio
@@ -24,6 +25,7 @@ from app.services.job_manager import JobManager
 # ═══════════════════════════════════════════════════════
 
 
+@pytest.mark.unit
 async def test_job_has_event_field():
     """JobInfo 생성 시 asyncio.Event가 자동 포함되는지 검증"""
     jm = JobManager()
@@ -32,9 +34,9 @@ async def test_job_has_event_field():
     assert hasattr(job, "_event")
     assert isinstance(job._event, asyncio.Event)
     assert not job._event.is_set()
-    print("\n✅ [Event] JobInfo에 _event 필드 존재, 초기값 is_set()=False")
 
 
+@pytest.mark.unit
 async def test_event_set_on_update():
     """update_job 호출 시 _event.set()이 트리거되는지 검증"""
     jm = JobManager()
@@ -43,9 +45,9 @@ async def test_event_set_on_update():
 
     await jm.update_job("event-002", status="processing")
     assert job._event.is_set()
-    print("\n✅ [Event] update_job 호출 → _event.is_set()=True 확인")
 
 
+@pytest.mark.unit
 async def test_event_wait_unblocks_on_update():
     """await _event.wait()가 update_job 시 즉시 해제되는지 검증"""
     jm = JobManager()
@@ -67,9 +69,9 @@ async def test_event_wait_unblocks_on_update():
     assert unblocked  # event.set()으로 해제됨
 
     await task
-    print("\n✅ [Event] event.wait() → update_job() → 즉시 해제 확인")
 
 
+@pytest.mark.unit
 async def test_event_multiple_state_transitions():
     """clear → wait → set 사이클 반복 동작 검증 (SSE 스트림 시뮬레이션)"""
     jm = JobManager()
@@ -97,9 +99,9 @@ async def test_event_multiple_state_transitions():
     await task
 
     assert received == ["processing", "completed"]
-    print(f"\n✅ [Event] 상태 전이 수신: {received} (pending→processing→completed)")
 
 
+@pytest.mark.unit
 async def test_event_failed_ends_stream():
     """failed 상태가 SSE 스트림을 정상 종료하는지 검증"""
     jm = JobManager()
@@ -127,9 +129,9 @@ async def test_event_failed_ends_stream():
 
     assert received == ["processing", "failed"]
     assert job.error_message == "테스트 에러"
-    print(f"\n✅ [Event] failed 전이 수신: {received}, 에러: '{job.error_message}'")
 
 
+@pytest.mark.unit
 async def test_multiple_jobs_events_independent():
     """여러 Job의 _event가 서로 간섭하지 않는지 검증"""
     jm = JobManager()
@@ -141,7 +143,6 @@ async def test_multiple_jobs_events_independent():
 
     assert job_a._event.is_set()
     assert not job_b._event.is_set()  # job_b는 영향 없음
-    print("\n✅ [Event] Job A 업데이트 → Job B _event 영향 없음 (독립성)")
 
 
 # ═══════════════════════════════════════════════════════
@@ -195,15 +196,16 @@ def parse_sse_events(text: str) -> list[dict]:
     return events
 
 
+@pytest.mark.integration
 async def test_sse_404_for_unknown_job(sse_client):
     """존재하지 않는 job_id로 SSE 요청 시 404 반환"""
     response = await sse_client.get("/api/generate/jobs/nonexistent-id/stream")
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Job not found"
-    print("\n✅ [SSE 엔드포인트] 존재하지 않는 job_id → 404 반환")
 
 
+@pytest.mark.integration
 async def test_sse_completed_job_sends_single_event(sse_client):
     """이미 completed된 Job에 SSE 연결 시 이벤트 1개 후 스트림 종료"""
     from app.services.job_manager import job_manager
@@ -227,9 +229,9 @@ async def test_sse_completed_job_sends_single_event(sse_client):
     assert events[0]["status"] == "completed"
     assert events[0]["result_url"] == "/storage/images/test.png"
     assert events[0]["asset_id"] == 42
-    print(f"\n✅ [SSE 엔드포인트] completed Job → 이벤트 1개 수신, content-type=text/event-stream")
 
 
+@pytest.mark.integration
 async def test_sse_failed_job_sends_single_event(sse_client):
     """이미 failed된 Job에 SSE 연결 시 이벤트 1개 후 스트림 종료"""
     from app.services.job_manager import job_manager
@@ -247,9 +249,9 @@ async def test_sse_failed_job_sends_single_event(sse_client):
     assert len(events) == 1
     assert events[0]["status"] == "failed"
     assert events[0]["error_message"] == "테스트 실패 메시지"
-    print(f"\n✅ [SSE 엔드포인트] failed Job → 이벤트 1개 수신 (에러: '{events[0]['error_message']}')")
 
 
+@pytest.mark.integration
 async def test_sse_streams_realtime_state_changes(sse_client):
     """SSE로 pending→processing→completed 상태 전이를 실시간 수신"""
     from app.services.job_manager import job_manager
@@ -281,9 +283,9 @@ async def test_sse_streams_realtime_state_changes(sse_client):
     assert events[1]["status"] == "processing"
     assert events[2]["status"] == "completed"
     assert events[2]["result_url"] == "/storage/videos/stream-test.mp4"
-    print(f"\n✅ [SSE 엔드포인트] 실시간 상태 전이: {[e['status'] for e in events]}")
 
 
+@pytest.mark.integration
 async def test_sse_streams_failed_transition(sse_client):
     """SSE로 pending→processing→failed 전이를 수신하고 스트림 종료"""
     from app.services.job_manager import job_manager
@@ -314,4 +316,3 @@ async def test_sse_streams_failed_transition(sse_client):
     assert events[1]["status"] == "processing"
     assert events[2]["status"] == "failed"
     assert events[2]["error_message"] == "Vertex AI 에러"
-    print(f"\n✅ [SSE 엔드포인트] failed 전이: {[e['status'] for e in events]}, 에러: '{events[2]['error_message']}'")

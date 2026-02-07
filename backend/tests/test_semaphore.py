@@ -1,17 +1,15 @@
 """
-Phase 7 검증: Semaphore 기반 Rate Limit 동시 실행 제한 테스트
+Semaphore 기반 Rate Limit 동시 실행 제한 시뮬레이션 테스트
 
 vertex_ai.py에 적용된 것과 동일한 Semaphore 설정으로
 동시 실행 제한 동작을 검증합니다. (Vertex AI 모듈을 직접 import하지 않음)
 
-테스트 전략:
-- vertex_ai.py의 IMAGE_SEMAPHORE(10), VIDEO_SEMAPHORE(3) 설정을 재현
-- asyncio.gather로 동시 요청을 시뮬레이션
-- "현재 동시 실행 중인 수"를 카운터로 추적하여 최대치 검증
-- 디트로이트파: "동시 실행이 N개를 초과하지 않는가?"(행위)를 검증
+유형: Simulation Test — import 불가 모듈(vertex_ai.py)의 Semaphore 설정을 동일하게 재현
 """
 import pytest
 import asyncio
+
+pytestmark = pytest.mark.simulation
 
 
 # ================================================================
@@ -85,7 +83,6 @@ async def test_image_semaphore_limits_to_10():
 
     assert tracker["max"] <= 10
     assert tracker["completed"] == 20
-    print(f"\n✅ [Image] 20개 동시 요청 → 최대 동시 실행 {tracker['max']}개 (제한: 10)")
 
 
 @pytest.mark.asyncio
@@ -105,7 +102,6 @@ async def test_image_semaphore_allows_up_to_10():
 
     assert tracker["max"] == 10
     assert tracker["completed"] == 10
-    print(f"\n✅ [Image] 10개 동시 요청 → 전부 즉시 실행 (최대 {tracker['max']}개)")
 
 
 # ================================================================
@@ -129,7 +125,6 @@ async def test_video_semaphore_limits_to_3():
 
     assert tracker["max"] <= 3
     assert tracker["completed"] == 10
-    print(f"\n✅ [Video] 10개 동시 요청 → 최대 동시 실행 {tracker['max']}개 (제한: 3)")
 
 
 @pytest.mark.asyncio
@@ -149,7 +144,6 @@ async def test_video_semaphore_allows_up_to_3():
 
     assert tracker["max"] == 3
     assert tracker["completed"] == 3
-    print(f"\n✅ [Video] 3개 동시 요청 → 전부 즉시 실행 (최대 {tracker['max']}개)")
 
 
 # ================================================================
@@ -181,7 +175,6 @@ async def test_semaphore_released_on_exception():
 
     assert tracker["completed"] == 2
     assert sem._value == 2  # 슬롯 전부 복구됨
-    print(f"\n✅ [안전성] 예외 발생 후에도 Semaphore 슬롯 정상 복구 (남은 슬롯: {sem._value})")
 
 
 @pytest.mark.asyncio
@@ -211,10 +204,6 @@ async def test_image_and_video_semaphores_are_independent():
     assert vid_tracker["max"] <= 3
     assert img_tracker["completed"] == 10
     assert vid_tracker["completed"] == 5
-    print(
-        f"\n✅ [독립성] 이미지 최대 {img_tracker['max']}개 (제한:10), "
-        f"비디오 최대 {vid_tracker['max']}개 (제한:3) — 서로 간섭 없음"
-    )
 
 
 @pytest.mark.asyncio
@@ -234,10 +223,6 @@ async def test_all_tasks_eventually_complete():
 
     assert tracker["max"] <= 3
     assert tracker["completed"] == 100
-    print(
-        f"\n✅ [완료 보장] 100개 요청 → 최대 동시 {tracker['max']}개, "
-        f"전부 완료 ({tracker['completed']}개)"
-    )
 
 
 @pytest.mark.asyncio
@@ -257,4 +242,3 @@ async def test_semaphore_value_restored_after_all_complete():
 
     assert sem._value == 3
     assert tracker["completed"] == 10
-    print(f"\n✅ [복구] 10개 완료 후 Semaphore._value = {sem._value} (초기값으로 복구)")

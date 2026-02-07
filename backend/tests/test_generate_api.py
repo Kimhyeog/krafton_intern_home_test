@@ -6,15 +6,15 @@ Generate API 엔드포인트 통합 테스트
 - job_id 반환 + 초기 상태 검증
 - Vertex AI 호출은 mock 처리
 
+유형: Integration Test — DB/VertexAI만 Mock, JobManager/Pydantic은 진짜 사용
 전략: 디트로이트파 (Classicist)
-- 외부 시스템(DB, VertexAI)만 Mock
-- 내부 객체(JobManager, Pydantic, FastAPI 라우팅)는 진짜 사용
-- "함수가 호출되었는가?" 가 아니라 "응답이 올바른가?" 를 검증
 """
 import pytest
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import AsyncClient, ASGITransport
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture

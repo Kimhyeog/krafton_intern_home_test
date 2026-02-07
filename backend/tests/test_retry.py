@@ -1,11 +1,15 @@
 """
-Phase 4 검증: Exponential Backoff 재시도 테스트
+Exponential Backoff 재시도 시뮬레이션 테스트
 
 vertex_ai.py에 적용된 것과 동일한 tenacity 설정으로
 재시도 동작을 검증합니다. (Vertex AI 모듈을 직접 import하지 않음)
+
+유형: Simulation Test — import 불가 모듈(vertex_ai.py)의 로직을 동일 설정으로 재현
 """
 import pytest
 import logging
+
+pytestmark = pytest.mark.simulation
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -93,7 +97,6 @@ async def test_imagen_429_retry_then_succeed():
 
     assert result == "image_bytes"
     assert call_count == 3
-    print(f"\n✅ [Imagen] 429 에러 2번 → 3번째 성공 (총 {call_count}번 호출)")
 
 
 @pytest.mark.asyncio
@@ -115,7 +118,6 @@ async def test_imagen_503_retry_then_succeed():
 
     assert result == "image_bytes"
     assert call_count == 2
-    print(f"\n✅ [Imagen] 503 에러 1번 → 2번째 성공 (총 {call_count}번 호출)")
 
 
 @pytest.mark.asyncio
@@ -136,7 +138,6 @@ async def test_imagen_500_retry_then_succeed():
 
     assert result == "image_bytes"
     assert call_count == 2
-    print(f"\n✅ [Imagen] 500 에러 1번 → 2번째 성공 (총 {call_count}번 호출)")
 
 
 @pytest.mark.asyncio
@@ -156,7 +157,6 @@ async def test_imagen_400_no_retry():
         await simulate_imagen_call(fake_api)
 
     assert call_count == 1
-    print(f"\n✅ [Imagen] 400 에러 → 재시도 없이 즉시 실패 ({call_count}번만 호출)")
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,6 @@ async def test_imagen_gives_up_after_5_attempts():
         await simulate_imagen_call(fake_api)
 
     assert call_count == 5
-    print(f"\n✅ [Imagen] 429 연속 → {call_count}번 시도 후 포기 (최대 5회)")
 
 
 # ================================================================
@@ -201,7 +200,6 @@ async def test_veo_429_retry_then_succeed():
 
     assert result == "operation-name-123"
     assert call_count == 2
-    print(f"\n✅ [Veo] 429 에러 1번 → 2번째 성공 (총 {call_count}번 호출)")
 
 
 @pytest.mark.asyncio
@@ -222,7 +220,6 @@ async def test_veo_500_retry_then_succeed():
 
     assert result == "operation-name-456"
     assert call_count == 2
-    print(f"\n✅ [Veo] 500 에러 1번 → 2번째 성공 (총 {call_count}번 호출)")
 
 
 @pytest.mark.asyncio
@@ -242,7 +239,6 @@ async def test_veo_400_no_retry():
         await simulate_veo_start(fake_api)
 
     assert call_count == 1
-    print(f"\n✅ [Veo] 400 에러 → 재시도 없이 즉시 실패 ({call_count}번만 호출)")
 
 
 @pytest.mark.asyncio
@@ -262,4 +258,3 @@ async def test_veo_gives_up_after_3_attempts():
         await simulate_veo_start(fake_api)
 
     assert call_count == 3
-    print(f"\n✅ [Veo] 429 연속 → {call_count}번 시도 후 포기 (최대 3회, Imagen보다 보수적)")

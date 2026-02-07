@@ -4,9 +4,13 @@ JobManager 단위 테스트
 테스트 대상: backend/app/services/job_manager.py
 - Job 생성, 상태 업데이트, 조회 로직 검증
 - 외부 의존성 없음 (인메모리)
+
+유형: Unit Test — 혼자 동작 가능 (dict만 사용)
 """
 import pytest
 from app.services.job_manager import JobManager, JobInfo
+
+pytestmark = pytest.mark.unit
 
 
 # ===== Job 생성 테스트 =====

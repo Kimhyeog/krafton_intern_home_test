@@ -6,16 +6,16 @@
 - 상세 조회 (GET /api/assets/{id})
 - 삭제 (DELETE /api/assets/{id})
 
+유형: Integration Test — DB/파일시스템만 Mock, FastAPI 라우팅은 진짜 사용
 전략: 디트로이트파 (Classicist)
-- 외부 시스템(DB, 파일시스템)만 Mock
-- 내부 객체(FastAPI 라우팅, Pydantic)는 진짜 사용
-- "응답 상태 코드와 데이터가 올바른가?" + "본인 에셋만 접근 가능한가?" 를 검증
 """
 import pytest
 import sys
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import AsyncClient, ASGITransport
+
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture

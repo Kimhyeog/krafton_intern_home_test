@@ -6,15 +6,15 @@
 - JWT Access Token 생성/디코딩
 - Refresh Token 로테이션/탈취 감지
 
+유형: Unit Test — 순수 함수 직접 테스트 + DB 의존 함수는 DB만 mock
 전략: 디트로이트파 (Classicist)
-- hash_password, verify_password, create/decode_access_token은 외부 의존성 없이 직접 테스트
-- DB 의존 함수(create_refresh_token, rotate_refresh_token 등)는 DB만 mock
-- "올바른 결과가 나오는가?" 를 검증
 """
 import pytest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
+
+pytestmark = pytest.mark.unit
 
 
 # ===== 비밀번호 해싱 (순수 함수, mock 불필요) =====
