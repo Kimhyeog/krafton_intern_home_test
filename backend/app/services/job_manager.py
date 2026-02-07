@@ -11,6 +11,7 @@ class JobInfo:
     result_url: Optional[str] = None
     error_message: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
+    _event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
 class JobManager:
     def __init__(self):
@@ -28,6 +29,7 @@ class JobManager:
             if job_id in self._jobs:
                 for key, value in kwargs.items():
                     setattr(self._jobs[job_id], key, value)
+                self._jobs[job_id]._event.set()
 
     async def get_job(self, job_id: str) -> Optional[JobInfo]:
         return self._jobs.get(job_id)

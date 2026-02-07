@@ -1,8 +1,10 @@
 from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from uuid import uuid4
 from datetime import datetime
+import json
 from app.db import db
 from app.services.job_manager import job_manager
 from app.services.vertex_ai import vertex_ai_service
@@ -176,4 +178,48 @@ async def get_job_status(job_id: str):
         asset_id=job.asset_id,
         result_url=job.result_url,
         error_message=job.error_message
+    )
+
+@router.get("/jobs/{job_id}/stream")
+async def stream_job_status(job_id: str):
+    """SSE 엔드포인트: Job 상태 변화를 실시간 스트리밍"""
+    job = await job_manager.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    def _job_data(j) -> str:
+        return json.dumps({
+            "job_id": j.job_id,
+            "status": j.status,
+            "asset_id": j.asset_id,
+            "result_url": j.result_url,
+            "error_message": j.error_message,
+        })
+
+    async def event_generator():
+        # 현재 상태를 즉시 전송
+        yield f"data: {_job_data(job)}\n\n"
+
+        # 이미 완료 상태이면 스트림 종료
+        if job.status in ("completed", "failed"):
+            return
+
+        # 상태 변화를 대기하며 전송
+        while True:
+            job._event.clear()
+            await job._event.wait()
+
+            yield f"data: {_job_data(job)}\n\n"
+
+            if job.status in ("completed", "failed"):
+                return
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

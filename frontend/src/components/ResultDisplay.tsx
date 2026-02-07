@@ -85,9 +85,9 @@ export function ResultDisplay({ jobStatus, mode, error }: ResultDisplayProps) {
           <span className="flex items-center justify-center w-12 h-12 bg-red-600 text-white rounded-full text-2xl font-bold">
             !
           </span>
-          <p className="text-red-600">Generation failed</p>
+          <p className="text-red-600 font-semibold">생성 실패</p>
           {jobStatus.error_message && (
-            <p className="text-red-800 text-sm max-w-[400px] text-center">
+            <p className="text-red-800 text-sm max-w-[480px] text-center leading-relaxed">
               {jobStatus.error_message}
             </p>
           )}
