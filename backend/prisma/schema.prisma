@@ -9,6 +9,27 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id            Int            @id @default(autoincrement())
+  email         String         @unique
+  username      String         @unique
+  password      String
+  createdAt     DateTime       @default(now()) @map("created_at")
+  assets        Asset[]
+  refreshTokens RefreshToken[]
+  @@map("users")
+}
+
+model RefreshToken {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id])
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@map("refresh_tokens")
+}
+
 model Asset {
   id        Int      @id @default(autoincrement())
   jobId     String   @unique @map("job_id")
@@ -19,6 +40,9 @@ model Asset {
   createdAt DateTime @default(now()) @map("created_at")
   fileSize  Int?     @map("file_size")
   duration  Float?
+
+  userId    Int?     @map("user_id")
+  user      User?    @relation(fields: [userId], references: [id])
 
   @@map("assets")
 }

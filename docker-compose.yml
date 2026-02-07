@@ -20,6 +20,11 @@ services:
       - GOOGLE_CLOUD_REGION=us-central1
       - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/service-account.json
       - STORAGE_PATH=/app/storage
+      # JWT 인증 설정
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-krafton-jwt-default-dev-key}
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=15
+      - REFRESH_TOKEN_EXPIRE_DAYS=7
       # 부하 테스트 Mock 모드 (Vertex AI 호출을 asyncio.sleep으로 대체)
       # 실제 Vertex AI 생성을 사용하려면 아래 줄을 주석 처리
       # - LOAD_TEST_MODE=true

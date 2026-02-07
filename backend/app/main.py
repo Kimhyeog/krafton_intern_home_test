@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from app.db import connect_db, disconnect_db
-from app.routers import generate, assets
+from app.routers import generate, assets, auth
 from app.config import get_settings
 import os
 
@@ -28,6 +28,7 @@ app.add_middleware(
 )
 
 app.mount("/storage", StaticFiles(directory=settings.storage_path), name="storage")
+app.include_router(auth.router)
 app.include_router(generate.router)
 app.include_router(assets.router)
 

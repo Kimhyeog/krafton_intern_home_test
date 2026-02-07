@@ -19,7 +19,7 @@ from httpx import AsyncClient, ASGITransport
 
 @pytest.fixture
 async def client(monkeypatch, tmp_path):
-    """테스트용 AsyncClient 생성 (DB + VertexAI mock)"""
+    """테스트용 AsyncClient 생성 (DB + VertexAI mock + Auth override)"""
     # 1. 테스트용 storage 디렉터리 생성
     storage = tmp_path / "storage"
     (storage / "images").mkdir(parents=True)
@@ -55,9 +55,20 @@ async def client(monkeypatch, tmp_path):
 
         from app.main import app
 
+        # 7. 인증 우회: get_current_user를 mock 사용자로 override
+        mock_user = MagicMock()
+        mock_user.id = 1
+        mock_user.email = "test@test.com"
+        mock_user.username = "testuser"
+
+        from app.services.auth import get_current_user
+        app.dependency_overrides[get_current_user] = lambda: mock_user
+
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
+
+        app.dependency_overrides.clear()
 
     get_settings.cache_clear()
 

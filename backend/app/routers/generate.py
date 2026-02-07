@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException
+from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
@@ -8,6 +8,7 @@ import json
 from app.db import db
 from app.services.job_manager import job_manager
 from app.services.vertex_ai import vertex_ai_service
+from app.services.auth import get_current_user
 import logging
 
 logger = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ async def find_cached_asset(prompt: str, model: str, asset_type: str) -> Optiona
 
 # ===== Background Tasks =====
 
-async def process_image_generation(job_id: str, prompt: str, model: str, options: dict = None):
+async def process_image_generation(job_id: str, prompt: str, model: str, user_id: int, options: dict = None):
     try:
         await job_manager.update_job(job_id, status="processing")
         result_url = await vertex_ai_service.generate_image(prompt, job_id, options=options)
@@ -112,13 +113,14 @@ async def process_image_generation(job_id: str, prompt: str, model: str, options
             "filePath": result_url,
             "prompt": normalized_prompt,
             "model": model,
-            "assetType": "image"
+            "assetType": "image",
+            "userId": user_id,
         })
         await job_manager.update_job(job_id, status="completed", asset_id=asset.id, result_url=result_url)
     except Exception as e:
         await job_manager.update_job(job_id, status="failed", error_message=str(e))
 
-async def process_video_from_text(job_id: str, prompt: str, model: str, options: dict = None):
+async def process_video_from_text(job_id: str, prompt: str, model: str, user_id: int, options: dict = None):
     try:
         await job_manager.update_job(job_id, status="processing")
         result_url = await vertex_ai_service.generate_video_from_text(prompt, job_id, options=options)
@@ -128,13 +130,14 @@ async def process_video_from_text(job_id: str, prompt: str, model: str, options:
             "filePath": result_url,
             "prompt": normalized_prompt,
             "model": model,
-            "assetType": "video"
+            "assetType": "video",
+            "userId": user_id,
         })
         await job_manager.update_job(job_id, status="completed", asset_id=asset.id, result_url=result_url)
     except Exception as e:
         await job_manager.update_job(job_id, status="failed", error_message=str(e))
 
-async def process_video_from_image(job_id: str, prompt: str, model: str, image_bytes: bytes, mime_type: str, options: dict = None):
+async def process_video_from_image(job_id: str, prompt: str, model: str, user_id: int, image_bytes: bytes, mime_type: str, options: dict = None):
     try:
         await job_manager.update_job(job_id, status="processing")
         result_url = await vertex_ai_service.generate_video_from_image(prompt, image_bytes, job_id, mime_type, options=options)
@@ -144,7 +147,8 @@ async def process_video_from_image(job_id: str, prompt: str, model: str, image_b
             "filePath": result_url,
             "prompt": normalized_prompt,
             "model": model,
-            "assetType": "video"
+            "assetType": "video",
+            "userId": user_id,
         })
         await job_manager.update_job(job_id, status="completed", asset_id=asset.id, result_url=result_url)
     except Exception as e:
@@ -153,7 +157,11 @@ async def process_video_from_image(job_id: str, prompt: str, model: str, image_b
 # ===== API Endpoints =====
 
 @router.post("/text-to-image", response_model=GenerateResponse)
-async def text_to_image(request: ImageGenerateRequest, background_tasks: BackgroundTasks):
+async def text_to_image(
+    request: ImageGenerateRequest,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+):
     # Vertex AI 옵션 추출 (prompt, model 제외, None 값 제외)
     options = request.model_dump(exclude={"prompt", "model"}, exclude_none=True)
 
@@ -174,11 +182,15 @@ async def text_to_image(request: ImageGenerateRequest, background_tasks: Backgro
     # 캐시 미스 또는 고급 옵션 사용: 새로 생성
     job_id = str(uuid4())
     job = await job_manager.create_job(job_id)
-    background_tasks.add_task(process_image_generation, job_id, request.prompt, request.model, options)
+    background_tasks.add_task(process_image_generation, job_id, request.prompt, request.model, current_user.id, options)
     return GenerateResponse(job_id=job_id, status="pending", created_at=job.created_at)
 
 @router.post("/text-to-video", response_model=GenerateResponse)
-async def text_to_video(request: VideoGenerateRequest, background_tasks: BackgroundTasks):
+async def text_to_video(
+    request: VideoGenerateRequest,
+    background_tasks: BackgroundTasks,
+    current_user=Depends(get_current_user),
+):
     options = request.model_dump(exclude={"prompt", "model"}, exclude_none=True)
 
     # 캐시 확인: 고급 옵션이 없을 때만
@@ -198,7 +210,7 @@ async def text_to_video(request: VideoGenerateRequest, background_tasks: Backgro
     # 캐시 미스 또는 고급 옵션 사용
     job_id = str(uuid4())
     job = await job_manager.create_job(job_id)
-    background_tasks.add_task(process_video_from_text, job_id, request.prompt, request.model, options)
+    background_tasks.add_task(process_video_from_text, job_id, request.prompt, request.model, current_user.id, options)
     return GenerateResponse(job_id=job_id, status="pending", created_at=job.created_at)
 
 @router.post("/image-to-video", response_model=GenerateResponse)
@@ -207,6 +219,7 @@ async def image_to_video(
     model: str = Form(...),
     image: UploadFile = File(...),
     background_tasks: BackgroundTasks = None,
+    current_user=Depends(get_current_user),
     # Veo 3.0 Image-to-Video 파라미터 (Vertex AI Docs 기반)
     duration_seconds: Optional[int] = Form(None),
     seed: Optional[int] = Form(None),
@@ -228,7 +241,7 @@ async def image_to_video(
     job = await job_manager.create_job(job_id)
     image_bytes = await image.read()
     mime_type = image.content_type or "image/png"
-    background_tasks.add_task(process_video_from_image, job_id, prompt, model, image_bytes, mime_type, options)
+    background_tasks.add_task(process_video_from_image, job_id, prompt, model, current_user.id, image_bytes, mime_type, options)
     return GenerateResponse(job_id=job_id, status="pending", created_at=job.created_at)
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)

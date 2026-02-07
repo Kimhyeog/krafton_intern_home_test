@@ -4,10 +4,11 @@ import { useState } from "react";
 import { TabMenu } from "@/components/TabMenu";
 import { GenerateForm } from "@/components/GenerateForm";
 import { ResultDisplay } from "@/components/ResultDisplay";
+import { AuthGuard } from "@/components/AuthGuard";
 import { useGenerate } from "@/hooks/useGenerate";
 import type { GenerateMode, GenerationOptions } from "@/types";
 
-export default function Home() {
+function GenerateContent() {
   const [mode, setMode] = useState<GenerateMode>("text-to-image");
   const { generate, isLoading, jobStatus, error, reset } = useGenerate();
 
@@ -47,5 +48,13 @@ export default function Home() {
         />
       </div>
     </main>
+  );
+}
+
+export default function Home() {
+  return (
+    <AuthGuard>
+      <GenerateContent />
+    </AuthGuard>
   );
 }

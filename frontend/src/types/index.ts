@@ -1,3 +1,19 @@
+// ===== 사용자 인증 =====
+
+export interface User {
+  id: number;
+  email: string;
+  username: string;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
+// ===== 생성 모드 =====
+
 export type GenerateMode = "text-to-image" | "text-to-video" | "image-to-video";
 
 export interface JobStatus {
