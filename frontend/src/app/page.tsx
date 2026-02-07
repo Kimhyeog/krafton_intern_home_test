@@ -5,7 +5,7 @@ import { TabMenu } from "@/components/TabMenu";
 import { GenerateForm } from "@/components/GenerateForm";
 import { ResultDisplay } from "@/components/ResultDisplay";
 import { useGenerate } from "@/hooks/useGenerate";
-import type { GenerateMode } from "@/types";
+import type { GenerateMode, GenerationOptions } from "@/types";
 
 export default function Home() {
   const [mode, setMode] = useState<GenerateMode>("text-to-image");
@@ -16,8 +16,8 @@ export default function Home() {
     setMode(newMode);
   };
 
-  const handleSubmit = (prompt: string, model: string, imageFile?: File) => {
-    generate(mode, prompt, model, imageFile);
+  const handleSubmit = (prompt: string, model: string, imageFile?: File, options?: GenerationOptions) => {
+    generate(mode, prompt, model, imageFile, options);
   };
 
   return (

@@ -139,18 +139,28 @@ class VertexAIService:
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def generate_image(self, prompt: str, job_id: str) -> str:
+    async def generate_image(self, prompt: str, job_id: str, options: dict = None) -> str:
         """
         Text-to-Image: Imagen 3.0으로 이미지 생성
 
         - Semaphore로 동시 실행 수 제한 (최대 10개)
         - 429/503 에러 시 Exponential Backoff로 자동 재시도 (최대 5회)
+
+        Vertex AI Imagen 3.0 Python SDK 지원 파라미터 (options):
+            - aspect_ratio: "1:1", "3:4", "4:3", "16:9", "9:16"
+            - negative_prompt: 생성 시 제외할 요소
+            - seed: 결정론적 생성 (1~2147483647, add_watermark=False 필요)
+            - guidance_scale: 프롬프트 충실도 (0~100, 높을수록 프롬프트 충실)
+            - safety_filter_level: "block_low_and_above", "block_medium_and_above", "block_only_high"
+            - add_watermark: SynthID 디지털 워터마크 (bool)
+            - language: 프롬프트 언어 ("auto", "en", "ko", "ja" 등)
         """
+        options = options or {}
+
         async with IMAGE_SEMAPHORE:
-            logger.info(f"[Imagen] Acquired semaphore for job {job_id}")
+            logger.info(f"[Imagen] Acquired semaphore for job {job_id}, options={options}")
 
             if LOAD_TEST_MODE:
-                # Mock: 실제 API 대신 2~4초 대기
                 await asyncio.sleep(random.uniform(2, 4))
                 file_name = f"{job_id}.png"
                 file_path = os.path.join(settings.storage_path, "images", file_name)
@@ -160,14 +170,33 @@ class VertexAIService:
                 logger.info(f"[Imagen] Mock generation completed for job {job_id}")
                 return f"/storage/images/{file_name}"
 
+            # Imagen Python SDK 파라미터 구성 (inspect.signature 검증 완료)
+            sdk_kwargs = {
+                "prompt": prompt,
+                "number_of_images": 1,
+            }
+            if options.get("aspect_ratio"):
+                sdk_kwargs["aspect_ratio"] = options["aspect_ratio"]
+            if options.get("negative_prompt"):
+                sdk_kwargs["negative_prompt"] = options["negative_prompt"]
+            if options.get("seed") is not None:
+                sdk_kwargs["seed"] = options["seed"]
+            if options.get("guidance_scale") is not None:
+                sdk_kwargs["guidance_scale"] = options["guidance_scale"]
+            if options.get("safety_filter_level"):
+                sdk_kwargs["safety_filter_level"] = options["safety_filter_level"]
+            if options.get("language"):
+                sdk_kwargs["language"] = options["language"]
+            if options.get("add_watermark") is not None:
+                sdk_kwargs["add_watermark"] = options["add_watermark"]
+
+            logger.info(f"[Imagen] SDK kwargs: {sdk_kwargs}")
+
             try:
                 loop = asyncio.get_event_loop()
                 response = await loop.run_in_executor(
                     None,
-                    lambda: self.image_model.generate_images(
-                        prompt=prompt,
-                        number_of_images=1
-                    )
+                    lambda: self.image_model.generate_images(**sdk_kwargs)
                 )
             except Exception as e:
                 error_str = str(e)
@@ -180,14 +209,20 @@ class VertexAIService:
                 if "500" in error_str or "INTERNAL" in error_str:
                     logger.warning(f"[Imagen] Internal error, will retry: {error_str}")
                     raise RetryableAPIError(error_str)
-                # 400, 403 등은 재시도 불가 — 안전 정책이면 한글 변환
                 korean = _to_korean_safety_message(error_str)
                 if korean:
                     logger.warning(f"[Imagen] Safety policy error: {error_str}")
                     raise NonRetryableAPIError(korean)
                 raise NonRetryableAPIError(error_str)
 
-        # 파일 저장은 Semaphore 밖 (I/O가 슬롯을 점유할 필요 없음)
+        # 안전 필터 체크: API는 200이지만 이미지가 0개일 수 있음 (RAI 필터링)
+        if not response.images:
+            logger.warning(f"[Imagen] Safety filter blocked all images for job {job_id}")
+            raise NonRetryableAPIError(
+                "생성된 이미지가 안전 정책(폭력, 선정성 등)에 의해 차단되었습니다. 프롬프트를 수정한 후 다시 시도해 주세요."
+            )
+
+        # 파일 저장 (Semaphore 밖)
         file_name = f"{job_id}.png"
         file_path = os.path.join(settings.storage_path, "images", file_name)
 
@@ -196,20 +231,29 @@ class VertexAIService:
 
         return f"/storage/images/{file_name}"
 
-    async def generate_video_from_text(self, prompt: str, job_id: str) -> str:
+    async def generate_video_from_text(self, prompt: str, job_id: str, options: dict = None) -> str:
         """
-        Text-to-Video: Veo로 텍스트에서 비디오 생성
+        Text-to-Video: Veo 3.0으로 텍스트에서 비디오 생성
 
         - Semaphore로 동시 실행 수 제한 (최대 3개)
         - LRO 요청 + 폴링 전체가 Semaphore 안에서 실행
+
+        Vertex AI Veo 3.0 지원 파라미터 (options):
+            - aspect_ratio: "16:9", "9:16"
+            - duration_seconds: 4, 6, 8
+            - negative_prompt: 생성 시 제외할 요소
+            - seed: 결정론적 생성 (0~4294967295)
+
+            - generate_audio: 오디오 동시 생성 (bool, Veo 3.0 전용)
+            - resolution: "720p", "1080p"
         """
-        logger.info(f"[Veo] Starting text-to-video generation for job {job_id}")
+        options = options or {}
+        logger.info(f"[Veo] Starting text-to-video generation for job {job_id}, options={options}")
 
         async with VIDEO_SEMAPHORE:
             logger.info(f"[Veo] Acquired semaphore for job {job_id}")
 
             if LOAD_TEST_MODE:
-                # Mock: 실제 API 대신 3~6초 대기
                 await asyncio.sleep(random.uniform(3, 6))
                 file_name = f"{job_id}.mp4"
                 file_path = os.path.join(settings.storage_path, "videos", file_name)
@@ -219,16 +263,13 @@ class VertexAIService:
                 logger.info(f"[Veo] Mock generation completed for job {job_id}")
                 return f"/storage/videos/{file_name}"
 
-            # 1. LRO 요청 시작
             operation_name = await self._start_veo_operation(
                 prompt=prompt,
-                image_base64=None
+                image_base64=None,
+                options=options,
             )
-
-            # 2. Operation 완료까지 폴링
             result = await self._poll_operation(operation_name)
 
-        # 3. 비디오 추출 및 저장 (Semaphore 밖)
         video_bytes = self._extract_video_from_result(result)
 
         file_name = f"{job_id}.mp4"
@@ -240,14 +281,22 @@ class VertexAIService:
         logger.info(f"[Veo] Video saved to {file_path}")
         return f"/storage/videos/{file_name}"
 
-    async def generate_video_from_image(self, prompt: str, image_bytes: bytes, job_id: str, mime_type: str = "image/png") -> str:
+    async def generate_video_from_image(self, prompt: str, image_bytes: bytes, job_id: str, mime_type: str = "image/png", options: dict = None) -> str:
         """
-        Image-to-Video: Veo로 이미지에서 비디오 생성
+        Image-to-Video: Veo 3.0으로 이미지에서 비디오 생성
 
         - Semaphore로 동시 실행 수 제한 (최대 3개)
         - LRO 요청 + 폴링 전체가 Semaphore 안에서 실행
+
+        Vertex AI Veo 3.0 Image-to-Video 지원 파라미터 (options):
+            - duration_seconds: 4, 6, 8
+            - seed: 결정론적 생성 (0~4294967295)
+
+            - resolution: "720p", "1080p"
+            - resize_mode: "pad", "crop" (이미지 비율 조정 방식)
         """
-        logger.info(f"[Veo] Starting image-to-video generation for job {job_id}")
+        options = options or {}
+        logger.info(f"[Veo] Starting image-to-video generation for job {job_id}, options={options}")
 
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
@@ -255,7 +304,6 @@ class VertexAIService:
             logger.info(f"[Veo] Acquired semaphore for job {job_id}")
 
             if LOAD_TEST_MODE:
-                # Mock: 실제 API 대신 3~6초 대기
                 await asyncio.sleep(random.uniform(3, 6))
                 file_name = f"{job_id}.mp4"
                 file_path = os.path.join(settings.storage_path, "videos", file_name)
@@ -265,17 +313,14 @@ class VertexAIService:
                 logger.info(f"[Veo] Mock generation completed for job {job_id}")
                 return f"/storage/videos/{file_name}"
 
-            # 1. LRO 요청 시작
             operation_name = await self._start_veo_operation(
                 prompt=prompt,
                 image_base64=image_base64,
-                image_mime_type=mime_type
+                image_mime_type=mime_type,
+                options=options,
             )
-
-            # 2. Operation 완료까지 폴링
             result = await self._poll_operation(operation_name)
 
-        # 3. 비디오 추출 및 저장 (Semaphore 밖)
         video_bytes = self._extract_video_from_result(result)
 
         file_name = f"{job_id}.mp4"
@@ -294,14 +339,24 @@ class VertexAIService:
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
     )
-    async def _start_veo_operation(self, prompt: str, image_base64: str = None, image_mime_type: str = None) -> str:
+    async def _start_veo_operation(self, prompt: str, image_base64: str = None, image_mime_type: str = None, options: dict = None) -> str:
         """
         Veo LRO 작업 시작 (REST API)
         - 429/503 에러 시 Exponential Backoff로 자동 재시도 (최대 3회)
 
+        Vertex AI Veo 3.0 REST API 파라미터 (options → camelCase 변환):
+            - aspect_ratio → aspectRatio: "16:9", "9:16"
+            - duration_seconds → durationSeconds: 4, 6, 8
+            - negative_prompt → negativePrompt: 제외할 요소
+            - seed → seed: 결정론적 생성
+            - generate_audio → generateAudio: 오디오 동시 생성
+            - resolution → resolution: "720p", "1080p"
+            - resize_mode → resizeMode: "pad", "crop" (image-to-video 전용)
+
         Returns:
             str: Operation name (폴링에 사용)
         """
+        options = options or {}
         url = f"{self.veo_base_url}/{self.veo_endpoint}:predictLongRunning"
 
         # 요청 본문 구성
@@ -313,14 +368,31 @@ class VertexAIService:
                 "mimeType": image_mime_type or "image/png"
             }
 
+        # Veo REST API 파라미터 구성 (Vertex AI Docs 기반)
+        parameters = {
+            "sampleCount": 1,
+            "durationSeconds": options.get("duration_seconds", 8),
+            "aspectRatio": options.get("aspect_ratio", "16:9"),
+        }
+
+        # 선택적 파라미터 추가 (설정된 경우에만)
+        if options.get("negative_prompt"):
+            parameters["negativePrompt"] = options["negative_prompt"]
+        if options.get("seed") is not None:
+            parameters["seed"] = options["seed"]
+        if options.get("generate_audio") is not None:
+            parameters["generateAudio"] = options["generate_audio"]
+        if options.get("resolution"):
+            parameters["resolution"] = options["resolution"]
+        if options.get("resize_mode"):
+            parameters["resizeMode"] = options["resize_mode"]
+
         payload = {
             "instances": [instance],
-            "parameters": {
-                "sampleCount": 1,
-                "durationSeconds": 8,
-                "aspectRatio": "16:9"
-            }
+            "parameters": parameters,
         }
+
+        logger.info(f"[Veo LRO] Parameters: {parameters}")
 
         headers = {
             "Authorization": f"Bearer {self._get_auth_token()}",

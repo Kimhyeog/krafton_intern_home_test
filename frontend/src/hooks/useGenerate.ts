@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { generate as apiGenerate, getJobStatus } from "@/lib/api";
-import type { GenerateMode, JobStatus } from "@/types";
+import type { GenerateMode, JobStatus, GenerationOptions } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -25,14 +25,14 @@ export function useGenerate() {
   }, [stopStreaming]);
 
   const generate = useCallback(
-    async (mode: GenerateMode, prompt: string, model: string, imageFile?: File) => {
+    async (mode: GenerateMode, prompt: string, model: string, imageFile?: File, options?: GenerationOptions) => {
       stopStreaming();
       setError(null);
       setIsLoading(true);
       setJobStatus(null);
 
       try {
-        const res = await apiGenerate(mode, prompt, model, imageFile);
+        const res = await apiGenerate(mode, prompt, model, imageFile, options);
 
         // 캐시 히트: 서버가 즉시 completed를 반환한 경우
         if (res.status === "completed") {
