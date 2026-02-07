@@ -34,4 +34,12 @@ class JobManager:
     async def get_job(self, job_id: str) -> Optional[JobInfo]:
         return self._jobs.get(job_id)
 
+    def get_stats(self) -> Dict[str, int]:
+        """Job 상태별 집계 반환"""
+        stats = {"pending": 0, "processing": 0, "completed": 0, "failed": 0}
+        for job in self._jobs.values():
+            if job.status in stats:
+                stats[job.status] += 1
+        return stats
+
 job_manager = JobManager()

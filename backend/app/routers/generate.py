@@ -1,17 +1,21 @@
-from fastapi import APIRouter, UploadFile, File, Form, BackgroundTasks, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from uuid import uuid4
 from datetime import datetime
 import json
+import os
+import aiofiles
 from app.db import db
 from app.services.job_manager import job_manager
-from app.services.vertex_ai import vertex_ai_service
+from app.services.queue_worker import queue_worker
 from app.services.auth import get_current_user
+from app.config import get_settings
 import logging
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter(prefix="/api/generate", tags=["generate"])
 
@@ -101,71 +105,15 @@ async def find_cached_asset(prompt: str, model: str, asset_type: str) -> Optiona
     return None
 
 
-# ===== Background Tasks =====
-
-async def process_image_generation(job_id: str, prompt: str, model: str, user_id: int, options: dict = None):
-    try:
-        await job_manager.update_job(job_id, status="processing")
-        result_url = await vertex_ai_service.generate_image(prompt, job_id, options=options)
-        normalized_prompt = prompt.strip().lower()
-        asset = await db.asset.create(data={
-            "jobId": job_id,
-            "filePath": result_url,
-            "prompt": normalized_prompt,
-            "model": model,
-            "assetType": "image",
-            "userId": user_id,
-        })
-        await job_manager.update_job(job_id, status="completed", asset_id=asset.id, result_url=result_url)
-    except Exception as e:
-        await job_manager.update_job(job_id, status="failed", error_message=str(e))
-
-async def process_video_from_text(job_id: str, prompt: str, model: str, user_id: int, options: dict = None):
-    try:
-        await job_manager.update_job(job_id, status="processing")
-        result_url = await vertex_ai_service.generate_video_from_text(prompt, job_id, options=options)
-        normalized_prompt = prompt.strip().lower()
-        asset = await db.asset.create(data={
-            "jobId": job_id,
-            "filePath": result_url,
-            "prompt": normalized_prompt,
-            "model": model,
-            "assetType": "video",
-            "userId": user_id,
-        })
-        await job_manager.update_job(job_id, status="completed", asset_id=asset.id, result_url=result_url)
-    except Exception as e:
-        await job_manager.update_job(job_id, status="failed", error_message=str(e))
-
-async def process_video_from_image(job_id: str, prompt: str, model: str, user_id: int, image_bytes: bytes, mime_type: str, options: dict = None):
-    try:
-        await job_manager.update_job(job_id, status="processing")
-        result_url = await vertex_ai_service.generate_video_from_image(prompt, image_bytes, job_id, mime_type, options=options)
-        normalized_prompt = prompt.strip().lower()
-        asset = await db.asset.create(data={
-            "jobId": job_id,
-            "filePath": result_url,
-            "prompt": normalized_prompt,
-            "model": model,
-            "assetType": "video",
-            "userId": user_id,
-        })
-        await job_manager.update_job(job_id, status="completed", asset_id=asset.id, result_url=result_url)
-    except Exception as e:
-        await job_manager.update_job(job_id, status="failed", error_message=str(e))
-
 # ===== API Endpoints =====
 
 @router.post("/text-to-image", response_model=GenerateResponse)
 async def text_to_image(
     request: ImageGenerateRequest,
-    background_tasks: BackgroundTasks,
     current_user=Depends(get_current_user),
 ):
-    # Vertex AI 옵션 추출 (prompt, model 제외, None 값 제외)
     options = request.model_dump(exclude={"prompt", "model"}, exclude_none=True)
 
-    # 캐시 확인: 고급 옵션이 없을 때만 캐시 조회 (옵션이 다르면 결과도 다름)
     if not options:
         cached = await find_cached_asset(request.prompt, request.model, "image")
         if cached:
@@ -179,21 +127,29 @@ async def text_to_image(
             )
             return GenerateResponse(job_id=job_id, status="completed", created_at=job.created_at)
 
-    # 캐시 미스 또는 고급 옵션 사용: 새로 생성
     job_id = str(uuid4())
+    options_json = json.dumps(options) if options else None
+
+    await db.job.create(data={
+        "jobId": job_id,
+        "jobType": "text-to-image",
+        "prompt": request.prompt,
+        "model": request.model,
+        "userId": current_user.id,
+        "options": options_json,
+    })
     job = await job_manager.create_job(job_id)
-    background_tasks.add_task(process_image_generation, job_id, request.prompt, request.model, current_user.id, options)
+    await queue_worker.enqueue(job_id)
+
     return GenerateResponse(job_id=job_id, status="pending", created_at=job.created_at)
 
 @router.post("/text-to-video", response_model=GenerateResponse)
 async def text_to_video(
     request: VideoGenerateRequest,
-    background_tasks: BackgroundTasks,
     current_user=Depends(get_current_user),
 ):
     options = request.model_dump(exclude={"prompt", "model"}, exclude_none=True)
 
-    # 캐시 확인: 고급 옵션이 없을 때만
     if not options:
         cached = await find_cached_asset(request.prompt, request.model, "video")
         if cached:
@@ -207,10 +163,20 @@ async def text_to_video(
             )
             return GenerateResponse(job_id=job_id, status="completed", created_at=job.created_at)
 
-    # 캐시 미스 또는 고급 옵션 사용
     job_id = str(uuid4())
+    options_json = json.dumps(options) if options else None
+
+    await db.job.create(data={
+        "jobId": job_id,
+        "jobType": "text-to-video",
+        "prompt": request.prompt,
+        "model": request.model,
+        "userId": current_user.id,
+        "options": options_json,
+    })
     job = await job_manager.create_job(job_id)
-    background_tasks.add_task(process_video_from_text, job_id, request.prompt, request.model, current_user.id, options)
+    await queue_worker.enqueue(job_id)
+
     return GenerateResponse(job_id=job_id, status="pending", created_at=job.created_at)
 
 @router.post("/image-to-video", response_model=GenerateResponse)
@@ -218,15 +184,12 @@ async def image_to_video(
     prompt: str = Form(...),
     model: str = Form(...),
     image: UploadFile = File(...),
-    background_tasks: BackgroundTasks = None,
     current_user=Depends(get_current_user),
-    # Veo 3.0 Image-to-Video 파라미터 (Vertex AI Docs 기반)
     duration_seconds: Optional[int] = Form(None),
     seed: Optional[int] = Form(None),
     resolution: Optional[str] = Form(None),
     resize_mode: Optional[str] = Form(None),
 ):
-    # 옵션 딕셔너리 구성
     options = {}
     if duration_seconds is not None:
         options["duration_seconds"] = duration_seconds
@@ -238,10 +201,33 @@ async def image_to_video(
         options["resize_mode"] = resize_mode
 
     job_id = str(uuid4())
-    job = await job_manager.create_job(job_id)
     image_bytes = await image.read()
     mime_type = image.content_type or "image/png"
-    background_tasks.add_task(process_video_from_image, job_id, prompt, model, current_user.id, image_bytes, mime_type, options)
+
+    # 이미지를 임시 파일로 저장 (DB에 바이트 저장 대신 파일 경로 저장)
+    ext = "png" if "png" in mime_type else "jpg"
+    temp_dir = os.path.join(settings.storage_path, "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = os.path.join(temp_dir, f"{job_id}.{ext}")
+
+    async with aiofiles.open(temp_path, "wb") as f:
+        await f.write(image_bytes)
+
+    options_json = json.dumps(options) if options else None
+
+    await db.job.create(data={
+        "jobId": job_id,
+        "jobType": "image-to-video",
+        "prompt": prompt,
+        "model": model,
+        "userId": current_user.id,
+        "options": options_json,
+        "imagePath": temp_path,
+        "mimeType": mime_type,
+    })
+    job = await job_manager.create_job(job_id)
+    await queue_worker.enqueue(job_id)
+
     return GenerateResponse(job_id=job_id, status="pending", created_at=job.created_at)
 
 @router.get("/jobs/{job_id}", response_model=JobStatusResponse)

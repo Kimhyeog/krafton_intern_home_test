@@ -40,7 +40,15 @@ async def client(monkeypatch, tmp_path):
     mock_vertex_module = MagicMock()
     monkeypatch.setitem(sys.modules, "app.services.vertex_ai", mock_vertex_module)
 
-    # 5. 의존 모듈 캐시 클리어 → 재임포트 시 mock vertex_ai 사용
+    # 4-1. queue_worker 모듈도 mock으로 주입 (vertex_ai를 import하므로)
+    mock_queue_worker_module = MagicMock()
+    mock_queue_worker_module.queue_worker.enqueue = AsyncMock()
+    mock_queue_worker_module.queue_worker.start = AsyncMock()
+    mock_queue_worker_module.queue_worker.stop = AsyncMock()
+    mock_queue_worker_module.queue_worker.pending_count = 0
+    monkeypatch.setitem(sys.modules, "app.services.queue_worker", mock_queue_worker_module)
+
+    # 5. 의존 모듈 캐시 클리어 → 재임포트 시 mock 사용
     for mod_name in list(sys.modules):
         if mod_name.startswith("app.routers") or mod_name == "app.main":
             monkeypatch.delitem(sys.modules, mod_name, raising=False)
@@ -52,6 +60,8 @@ async def client(monkeypatch, tmp_path):
 
         # DB 캐시 조회 mock: find_first → None (캐시 미스)
         mock_db.asset.find_first = AsyncMock(return_value=None)
+        # DB Job 생성 mock (QueueWorker용)
+        mock_db.job.create = AsyncMock(return_value=MagicMock(id=1, jobId="test"))
 
         from app.main import app
 

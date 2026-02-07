@@ -46,3 +46,25 @@ model Asset {
 
   @@map("assets")
 }
+
+model Job {
+  id           Int      @id @default(autoincrement())
+  jobId        String   @unique @map("job_id")
+  status       String   @default("queued") @map("status")
+  jobType      String   @map("job_type")
+  prompt       String
+  model        String
+  userId       Int      @map("user_id")
+  options      String?
+  imagePath    String?  @map("image_path")
+  mimeType     String?  @map("mime_type")
+
+  assetId      Int?     @map("asset_id")
+  resultUrl    String?  @map("result_url")
+  errorMessage String?  @map("error_message")
+
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("jobs")
+}
