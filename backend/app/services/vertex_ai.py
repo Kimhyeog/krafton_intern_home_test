@@ -34,6 +34,11 @@ VERTEX_AI_SCOPES = [
 LRO_POLL_INTERVAL = 10  # 10초마다 상태 확인
 LRO_MAX_WAIT_TIME = 600  # 최대 10분 대기
 
+# Rate Limit 제어용 Semaphore
+# Vertex AI Rate Limit: 이미지 60회/분, 비디오 10회/분
+IMAGE_SEMAPHORE = asyncio.Semaphore(10)  # 이미지 동시 최대 10개
+VIDEO_SEMAPHORE = asyncio.Semaphore(3)   # 비디오 동시 최대 3개
+
 
 # ===== 재시도용 커스텀 예외 =====
 
@@ -96,33 +101,35 @@ class VertexAIService:
         """
         Text-to-Image: Imagen 3.0으로 이미지 생성
 
-        Imagen은 동기식 API를 사용합니다.
-        - 요청 → 즉시 결과 반환 (5-10초)
+        - Semaphore로 동시 실행 수 제한 (최대 10개)
         - 429/503 에러 시 Exponential Backoff로 자동 재시도 (최대 5회)
         """
-        try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None,
-                lambda: self.image_model.generate_images(
-                    prompt=prompt,
-                    number_of_images=1
+        async with IMAGE_SEMAPHORE:
+            logger.info(f"[Imagen] Acquired semaphore for job {job_id}")
+            try:
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self.image_model.generate_images(
+                        prompt=prompt,
+                        number_of_images=1
+                    )
                 )
-            )
-        except Exception as e:
-            error_str = str(e)
-            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                logger.warning(f"[Imagen] Rate limit hit, will retry: {error_str}")
-                raise RetryableAPIError(error_str)
-            if "503" in error_str or "UNAVAILABLE" in error_str:
-                logger.warning(f"[Imagen] Service unavailable, will retry: {error_str}")
-                raise RetryableAPIError(error_str)
-            if "500" in error_str or "INTERNAL" in error_str:
-                logger.warning(f"[Imagen] Internal error, will retry: {error_str}")
-                raise RetryableAPIError(error_str)
-            # 400, 403 등은 재시도 불가
-            raise NonRetryableAPIError(error_str)
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                    logger.warning(f"[Imagen] Rate limit hit, will retry: {error_str}")
+                    raise RetryableAPIError(error_str)
+                if "503" in error_str or "UNAVAILABLE" in error_str:
+                    logger.warning(f"[Imagen] Service unavailable, will retry: {error_str}")
+                    raise RetryableAPIError(error_str)
+                if "500" in error_str or "INTERNAL" in error_str:
+                    logger.warning(f"[Imagen] Internal error, will retry: {error_str}")
+                    raise RetryableAPIError(error_str)
+                # 400, 403 등은 재시도 불가
+                raise NonRetryableAPIError(error_str)
 
+        # 파일 저장은 Semaphore 밖 (I/O가 슬롯을 점유할 필요 없음)
         file_name = f"{job_id}.png"
         file_path = os.path.join(settings.storage_path, "images", file_name)
 
@@ -133,24 +140,26 @@ class VertexAIService:
 
     async def generate_video_from_text(self, prompt: str, job_id: str) -> str:
         """
-        Text-to-Video: Veo 2.0으로 텍스트에서 비디오 생성
+        Text-to-Video: Veo로 텍스트에서 비디오 생성
 
-        Veo는 LRO (Long Running Operation) API를 사용합니다.
-        - REST API로 직접 호출
-        - 요청 → Operation ID 반환 → 폴링 → 완료 시 결과
+        - Semaphore로 동시 실행 수 제한 (최대 3개)
+        - LRO 요청 + 폴링 전체가 Semaphore 안에서 실행
         """
-        print(f"[Veo] Starting text-to-video generation for job {job_id}")
+        logger.info(f"[Veo] Starting text-to-video generation for job {job_id}")
 
-        # 1. LRO 요청 시작
-        operation_name = await self._start_veo_operation(
-            prompt=prompt,
-            image_base64=None
-        )
+        async with VIDEO_SEMAPHORE:
+            logger.info(f"[Veo] Acquired semaphore for job {job_id}")
 
-        # 2. Operation 완료까지 폴링
-        result = await self._poll_operation(operation_name)
+            # 1. LRO 요청 시작
+            operation_name = await self._start_veo_operation(
+                prompt=prompt,
+                image_base64=None
+            )
 
-        # 3. 비디오 추출 및 저장
+            # 2. Operation 완료까지 폴링
+            result = await self._poll_operation(operation_name)
+
+        # 3. 비디오 추출 및 저장 (Semaphore 밖)
         video_bytes = self._extract_video_from_result(result)
 
         file_name = f"{job_id}.mp4"
@@ -159,31 +168,34 @@ class VertexAIService:
         async with aiofiles.open(file_path, "wb") as f:
             await f.write(video_bytes)
 
-        print(f"[Veo] Video saved to {file_path}")
+        logger.info(f"[Veo] Video saved to {file_path}")
         return f"/storage/videos/{file_name}"
 
     async def generate_video_from_image(self, prompt: str, image_bytes: bytes, job_id: str, mime_type: str = "image/png") -> str:
         """
-        Image-to-Video: Veo 2.0으로 이미지에서 비디오 생성
+        Image-to-Video: Veo로 이미지에서 비디오 생성
 
-        Veo는 LRO (Long Running Operation) API를 사용합니다.
-        - 이미지를 base64로 인코딩하여 전송
+        - Semaphore로 동시 실행 수 제한 (최대 3개)
+        - LRO 요청 + 폴링 전체가 Semaphore 안에서 실행
         """
-        print(f"[Veo] Starting image-to-video generation for job {job_id}")
+        logger.info(f"[Veo] Starting image-to-video generation for job {job_id}")
 
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        # 1. LRO 요청 시작
-        operation_name = await self._start_veo_operation(
-            prompt=prompt,
-            image_base64=image_base64,
-            image_mime_type=mime_type
-        )
+        async with VIDEO_SEMAPHORE:
+            logger.info(f"[Veo] Acquired semaphore for job {job_id}")
 
-        # 2. Operation 완료까지 폴링
-        result = await self._poll_operation(operation_name)
+            # 1. LRO 요청 시작
+            operation_name = await self._start_veo_operation(
+                prompt=prompt,
+                image_base64=image_base64,
+                image_mime_type=mime_type
+            )
 
-        # 3. 비디오 추출 및 저장
+            # 2. Operation 완료까지 폴링
+            result = await self._poll_operation(operation_name)
+
+        # 3. 비디오 추출 및 저장 (Semaphore 밖)
         video_bytes = self._extract_video_from_result(result)
 
         file_name = f"{job_id}.mp4"
@@ -192,7 +204,7 @@ class VertexAIService:
         async with aiofiles.open(file_path, "wb") as f:
             await f.write(video_bytes)
 
-        print(f"[Veo] Video saved to {file_path}")
+        logger.info(f"[Veo] Video saved to {file_path}")
         return f"/storage/videos/{file_name}"
 
     @retry(
